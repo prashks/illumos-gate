@@ -15,11 +15,20 @@
 
 #include "cpqary3.h"
 
+extern void *cpqary3_state;
+int
+cpqary3_config_lun(cpqary3_t *cqp, uint16_t tgt, uint8_t lun,
+    dev_info_t **cdip);
+static int
+cpqary3_tran_bus_config(dev_info_t *pdip, uint_t flags,
+    ddi_bus_config_op_t bus_op, void *arg, dev_info_t **cdip);
+
 static boolean_t
 cpqary3_device_is_controller(struct scsi_device *sd)
 {
-	return (sd->sd_address.a_target == CPQARY3_CONTROLLER_TARGET &&
-	    sd->sd_address.a_lun == 0);
+	return ((sd->sd_address.a_target == CPQARY3_CONTROLLER_TARGET ||
+		(sd->sd_address.a_target == CTLR_SCSI_ID)) &&
+		sd->sd_address.a_lun == 0);
 }
 
 static int
@@ -27,9 +36,13 @@ cpqary3_tran_tgt_init(dev_info_t *hba_dip, dev_info_t *tgt_dip,
     scsi_hba_tran_t *hba_tran, struct scsi_device *sd)
 {
 	cpqary3_t *cpq = (cpqary3_t *)hba_tran->tran_hba_private;
-	cpqary3_volume_t *cplv;
+	/* cpqary3_volume_t *cplv; */
+	cpqary3_phys_dev_t *cppd = NULL;
 	cpqary3_target_t *cptg;
+	/* uint32_t tgt = sd->sd_address.a_target;
+	uint32_t lun = sd->sd_address.a_lun; */
 
+#if 0	/* XXX: pks: Enable this later */
 	/*
 	 * Check to see if new logical volumes are available.
 	 */
@@ -37,6 +50,35 @@ cpqary3_tran_tgt_init(dev_info_t *hba_dip, dev_info_t *tgt_dip,
 		dev_err(cpq->dip, CE_WARN, "discover logical volumes failure");
 		return (DDI_FAILURE);
 	}
+
+	/*
+	 * Check to see if new physical devices are available.
+	 */
+	if (cpqary3_discover_physical_devices(cpq, 15) != 0) {
+		dev_err(cpq->dip, CE_WARN,
+			"tgt_init: discover physical devices failure");
+		return (DDI_FAILURE);
+	}
+#endif
+
+	/*
+	 * XXX: pks: Enable this for more debug
+	 *
+	 * dev_err(cpq->dip, CE_NOTE,
+	 * "tgt_init for a_target: %d, lun: %d", tgt, lun);
+	 */
+
+	mutex_enter(&cpq->cpq_mutex);
+	if (cpq->cpq_status & CPQARY3_CTLR_STATUS_DISCOVERY) {
+		mutex_exit(&cpq->cpq_mutex);
+		dev_err(cpq->dip, CE_WARN,
+			"tgt_init: discovery still in progress, skipping...");
+		return (DDI_FAILURE);
+	}
+	mutex_exit(&cpq->cpq_mutex);
+
+	/* if (cpqary3_config_lun(cpq, tgt, lun, NULL) == NDI_FAILURE)
+		return (DDI_FAILURE); */
 
 	if ((cptg = kmem_zalloc(sizeof (*cptg), KM_NOSLEEP)) == NULL) {
 		dev_err(cpq->dip, CE_WARN, "could not allocate target object "
@@ -61,10 +103,11 @@ cpqary3_tran_tgt_init(dev_info_t *hba_dip, dev_info_t *tgt_dip,
 	 * representing the Smart Array controller itself.
 	 */
 	if (cpqary3_device_is_controller(sd)) {
-		cptg->cptg_controller_target = B_TRUE;
+		cptg->cptg_type = CPQARY3_TGT_CTLR;
 		goto skip_logvol;
 	}
 
+#if 0	/* XXX: pks: Enable this later */
 	/*
 	 * Look for a logical volume for the SCSI address of this target.
 	 */
@@ -76,7 +119,22 @@ cpqary3_tran_tgt_init(dev_info_t *hba_dip, dev_info_t *tgt_dip,
 	}
 
 	cptg->cptg_volume = cplv;
+	cptg->cptg_type = CPQARY3_TGT_LOGVOL;
 	list_insert_tail(&cplv->cplv_targets, cptg);
+#endif
+	/*
+	 * Look for a physical LU for the SCSI address of this target.
+	 */
+	if ((cppd = cpqary3_lookup_phys_dev_by_addr(cpq,
+			&sd->sd_address)) == NULL) {
+		mutex_exit(&cpq->cpq_mutex);
+		kmem_free(cptg, sizeof (*cptg));
+		return (DDI_FAILURE);
+	}
+
+	cptg->cptg_phys_dev = cppd;
+	cptg->cptg_type = CPQARY3_TGT_PHYSDEV;
+	list_insert_tail(&cppd->cppd_targets, cptg);
 
 skip_logvol:
 	/*
@@ -106,7 +164,11 @@ cpqary3_tran_tgt_free(dev_info_t *hba_dip, dev_info_t *tgt_dip,
 {
 	cpqary3_t *cpq = (cpqary3_t *)hba_tran->tran_hba_private;
 	cpqary3_target_t *cptg = (cpqary3_target_t *)hba_tran->tran_tgt_private;
-	cpqary3_volume_t *cplv = cptg->cptg_volume;
+	cpqary3_volume_t *cplv = NULL;
+	cpqary3_phys_dev_t *cppd = NULL;
+
+	if (cptg == NULL)
+		return;
 
 	VERIFY(cptg->cptg_scsi_dev == sd);
 
@@ -120,8 +182,21 @@ cpqary3_tran_tgt_free(dev_info_t *hba_dip, dev_info_t *tgt_dip,
 	/*
 	 * Remove this target from the tracking lists:
 	 */
-	if (!cptg->cptg_controller_target) {
-		list_remove(&cplv->cplv_targets, cptg);
+	if (cptg->cptg_type != CPQARY3_TGT_CTLR) {
+		switch (cptg->cptg_type) {
+		case CPQARY3_TGT_LOGVOL:
+			cplv = cptg->cptg_volume;
+			if (cplv != NULL)
+				list_remove(&cplv->cplv_targets, cptg);
+			break;
+		case CPQARY3_TGT_PHYSDEV:
+			cppd = cptg->cptg_phys_dev;
+			if (cppd != NULL)
+				list_remove(&cppd->cppd_targets, cptg);
+			break;
+		default:
+			break;
+		}
 	}
 	list_remove(&cpq->cpq_targets, cptg);
 
@@ -263,10 +338,12 @@ cpqary3_tran_start(struct scsi_address *sa, struct scsi_pkt *pkt)
 	 * expect.  Instead, fake up a failure response.
 	 */
 	switch (pkt->pkt_cdbp[0]) {
-	case SCMD_FORMAT:
+	#if 0	/* XXX: pks: Allow these commands, they're fine for physdevs */
 	case SCMD_LOG_SENSE_G1:
 	case SCMD_MODE_SELECT:
 	case SCMD_PERSISTENT_RESERVE_IN:
+	#endif
+	case SCMD_FORMAT:
 		cpcm->cpcm_status |= CPQARY3_CMD_STATUS_TRAN_IGNORED;
 
 		dev_err(cpq->dip, CE_WARN, "ignored SCSI cmd %02x",
@@ -309,19 +386,34 @@ cpqary3_tran_start(struct scsi_address *sa, struct scsi_pkt *pkt)
 		    pkt->pkt_cookies[i].dmac_size;
 	}
 
-	if (cpcm->cpcm_target->cptg_controller_target) {
+	switch (cpcm->cpcm_target->cptg_type) {
+	case CPQARY3_TGT_CTLR:
 		/*
 		 * The controller is, according to the CISS Specification,
 		 * always LUN 0 in the peripheral device addressing mode.
 		 */
 		cpqary3_write_lun_addr_phys(&cpcm->cpcm_va_cmd->Header.LUN,
 		    B_TRUE, 0, 0);
-	} else {
+		break;
+	case CPQARY3_TGT_LOGVOL:
 		/*
 		 * Copy logical volume address from the target object:
 		 */
 		cpcm->cpcm_va_cmd->Header.LUN.LogDev = cpcm->cpcm_target->
 		    cptg_volume->cplv_addr;
+		break;
+	case CPQARY3_TGT_PHYSDEV:
+		/*
+		 * Copy physical device address from the target object:
+		 */
+		bcopy(&(cpcm->cpcm_target->cptg_phys_dev->cppd_addr),
+			&(cpcm->cpcm_va_cmd->Header.LUN.PhysDev),
+			sizeof (PhysDevAddr_t));
+		if (cpcm->cpcm_target->cptg_phys_dev->cppd_addr.TargetId >= 0x41)
+			cpcm->cpcm_va_cmd->Header.LUN.PhysDev.TargetId = 0; /* XXX: Kludge */
+		break;
+	default:
+		return (TRAN_BADPKT);
 	}
 
 	/*
@@ -329,7 +421,9 @@ cpqary3_tran_start(struct scsi_address *sa, struct scsi_pkt *pkt)
 	 */
 	cpcm->cpcm_va_cmd->Request.CDBLen = pkt->pkt_cdblen;
 	cpcm->cpcm_va_cmd->Request.Type.Type = CISS_TYPE_CMD;
-	cpcm->cpcm_va_cmd->Request.Type.Attribute = CISS_ATTR_ORDERED;
+	/* cpcm->cpcm_va_cmd->Request.Type.Attribute = CISS_ATTR_ORDERED; */
+	/* IMP: This is for performance */
+	cpcm->cpcm_va_cmd->Request.Type.Attribute = CISS_ATTR_SIMPLE;
 	cpcm->cpcm_va_cmd->Request.Timeout = pkt->pkt_time;
 	if (pkt->pkt_numcookies > 0) {
 		/*
@@ -675,14 +769,11 @@ cpqary3_hba_setup(cpqary3_t *cpq)
 	tran->tran_teardown_pkt = cpqary3_tran_teardown_pkt;
 	tran->tran_hba_len = sizeof (cpqary3_command_scsa_t);
 
-#if 0
-	/*
-	 * XXX We should set "tran_interconnect_type" appropriately.
-	 * e.g. to INTERCONNECT_SAS for SAS controllers.  How to tell?
-	 * Who knows.
-	 */
-	tran->tran_interconnect_type = INTERCONNECT_SAS;
-#endif
+	/* Autoconf support */
+	tran->tran_bus_config = cpqary3_tran_bus_config;
+	if (cpq->cpq_board->bd_flags & SA_BD_SAS) {
+		tran->tran_interconnect_type = INTERCONNECT_SAS;
+	}
 
 	if (scsi_hba_attach_setup(cpq->dip, &cpq->cpq_dma_attr, tran,
 	    SCSI_HBA_TRAN_CLONE) != DDI_SUCCESS) {
@@ -704,4 +795,259 @@ cpqary3_hba_teardown(cpqary3_t *cpq)
 		scsi_hba_tran_free(cpq->cpq_hba_tran);
 		cpq->cpq_init_level &= ~CPQARY3_INITLEVEL_SCSA;
 	}
+}
+
+/*
+ * Autoconf support
+ */
+int
+cpqary3_get_tgt(char *path, int *tgt, int *lun)
+{
+	char dbuf[SCSI_MAXNAMELEN];
+	char *addr;
+	char *p,  *tp, *lp;
+	long num;
+
+	/* Get device name and address */
+	(void) strcpy(dbuf, path);
+	addr = "";
+	for (p = dbuf; *p != '\0'; p++) {
+		if (*p == '@') {
+			addr = p + 1;
+			*p = '\0';
+		} else if (*p == ':') {
+			*p = '\0';
+			break;
+		}
+	}
+
+	/* Get target and lun */
+	for (p = tp = addr, lp = NULL; *p != '\0'; p++) {
+		if (*p == ',') {
+			lp = p + 1;
+			*p = '\0';
+			break;
+		}
+	}
+	if (tgt && tp) {
+		if (ddi_strtol(tp, NULL, 0x10, &num))
+			return (-1);
+		*tgt = (int)num;
+	}
+	if (lun && lp) {
+		if (ddi_strtol(lp, NULL, 0x10, &num))
+			return (-1);
+		*lun = (int)num;
+	}
+	return (0);
+}
+
+dev_info_t *
+cpqary3_find_cdip(cpqary3_t *cqp, uint16_t tgt, uint8_t lun)
+{
+	dev_info_t *cdip = NULL;
+	char addr[SCSI_MAXNAMELEN];
+	char caddr[MAXNAMELEN];
+	int ctgt, clun;
+
+	(void) snprintf(addr, SCSI_MAXNAMELEN, "%x,%x", tgt, lun);
+	for (cdip = ddi_get_child(cqp->dip); cdip;
+		cdip = ddi_get_next_sibling(cdip)) {
+		/* skip non-persistent node */
+		if (ndi_dev_is_persistent_node(cdip) == 0)
+			continue;
+
+		/* Get the current tgt,lun props */
+		ctgt = ddi_prop_get_int(DDI_DEV_T_ANY, cdip,
+			DDI_PROP_DONTPASS, SCSI_ADDR_PROP_TARGET, -1);
+		clun = ddi_prop_get_int(DDI_DEV_T_ANY, cdip,
+			DDI_PROP_DONTPASS, SCSI_ADDR_PROP_LUN, -1);
+		if (ctgt != -1 && clun != -1)
+			(void) snprintf(caddr, MAXNAMELEN, "%x,%x", ctgt, clun);
+		else
+			continue;
+
+		/* Check for match */
+		if (strcmp(addr, caddr) == 0)
+			break;
+	}
+	return (cdip);
+}
+
+
+int
+cpqary3_config_cdip(cpqary3_t *cpq, struct scsi_device *sd,
+    dev_info_t **cdip)
+{
+	char		*childname = NULL;
+	char		*compatible[] = { "scsiclass,00", "scsiclass" };
+	int		ncompatible = 2;
+	dev_info_t	*lundip = NULL;
+	int		tgt = 0;
+	int		lun = 0;
+	int		rval = NDI_FAILURE;
+	scsi_lun64_t    lun64 = (scsi_lun64_t)lun;
+	char		wwn_str[18] = "";
+	uint64_t	sas_wwn = 0;
+	uint64_t	*wwnp = &sas_wwn;
+	cpqary3_phys_dev_t  *pdevp = NULL;
+
+	if ((sd == NULL) || (cpq == NULL))
+		return (rval);
+
+	tgt = sd->sd_address.a_target;
+	lun = sd->sd_address.a_lun;
+
+	mutex_enter(&cpq->cpq_mutex);
+	if ((pdevp = cpqary3_lookup_phys_dev_by_id(cpq, tgt)) != NULL) {
+		mutex_exit(&cpq->cpq_mutex);
+		bcopy(&(pdevp->cppd_wwn[8]), wwnp, SAS_WWN_BYTE_SIZE);
+		*wwnp = BE_64(*wwnp);
+		dev_err(cpq->dip, CE_NOTE,
+			"found wwn: 0x%016"PRIx64", for tgt:0x%x, lun:%d", *wwnp, tgt, lun);
+		snprintf(wwn_str, sizeof (wwn_str), "%016"PRIx64, *wwnp);
+	} else {
+		mutex_exit(&cpq->cpq_mutex);
+		/* dev_err(cpq->dip, CE_NOTE,
+			"phys dev not found for tgt:0x%x, lun:%d", tgt, lun); */
+		return (rval);
+	}
+
+	/*
+	 * TODO: check inq_dtype and change childname, compatible appropriately
+	 */
+	childname = "sd";
+	/* Create dev node */
+	rval = ndi_devi_alloc(cpq->dip, childname, DEVI_SID_NODEID, &lundip);
+	if (rval == NDI_SUCCESS) {
+		if (ndi_prop_update_int(DDI_DEV_T_NONE, lundip,
+			SCSI_ADDR_PROP_TARGET, tgt) != DDI_PROP_SUCCESS) {
+			dev_err(cpq->dip, CE_WARN, "unable to create "
+			    "target property for tgt:0x%x, lun:%d", tgt, lun);
+			rval = NDI_FAILURE;
+			goto done;
+		}
+		if (ndi_prop_update_int(DDI_DEV_T_NONE, lundip,
+			SCSI_ADDR_PROP_LUN, lun) != DDI_PROP_SUCCESS) {
+			dev_err(cpq->dip, CE_WARN, "unable to create "
+				"lun property for tgt:0x%x, lun:%d", tgt, lun);
+			rval = NDI_FAILURE;
+			goto done;
+		}
+		if (ndi_prop_update_string_array(DDI_DEV_T_NONE, lundip,
+		    "compatible", compatible, ncompatible)
+		    != DDI_PROP_SUCCESS) {
+			dev_err(cpq->dip, CE_WARN, "unable to create"
+				"compatible property for tgt:0x%x, lun:%d",
+				tgt, lun);
+			rval = NDI_FAILURE;
+			goto done;
+		}
+		(void) ndi_prop_update_string(DDI_DEV_T_NONE, lundip,
+					"class", "scsi");
+		(void) ndi_prop_update_int64(DDI_DEV_T_NONE, lundip,
+				SCSI_ADDR_PROP_LUN64, lun64);
+
+		/* GUID/wwn: Already obtained during physical dev discovery */
+		sd->sd_dev = lundip;
+		(void) ndi_prop_update_string(DDI_DEV_T_NONE, lundip,
+						"client-guid", wwn_str);
+		(void) ndi_prop_update_string(DDI_DEV_T_NONE, lundip,
+						"wwn", wwn_str);
+
+		rval = ndi_devi_online(lundip, NDI_ONLINE_ATTACH);
+		if (rval != NDI_SUCCESS) {
+			dev_err(cpq->dip, CE_WARN,
+				"unable to online tgt:0x%x, lun:%d, rval: 0x%x",
+				tgt, lun, rval);
+			/* ndi_prop_remove_all(lundip);
+			(void) ndi_devi_free(lundip); */
+		} else {
+			dev_err(cpq->dip, CE_NOTE,
+				"online tgt:0x%x, lun:%d", tgt, lun);
+		}
+	}
+done:
+	if (cdip)
+		*cdip = lundip;
+
+	return (rval);
+}
+
+int
+cpqary3_config_lun(cpqary3_t *cqp, uint16_t tgt, uint8_t lun,
+    dev_info_t **cdip)
+{
+	struct scsi_device sdev;
+	dev_info_t *child;
+	int rval = NDI_FAILURE;
+
+	if ((tgt == CTLR_SCSI_ID) || (tgt == CPQARY3_CONTROLLER_TARGET))
+		return (rval);
+
+	if (tgt < 0x41) /* XXX: Kludge */
+		return (rval);
+
+	if ((child = cpqary3_find_cdip(cqp, tgt, lun)) != NULL) {
+		if (cdip)
+			*cdip = child;
+		return (NDI_SUCCESS);
+	}
+
+	bzero(&sdev, sizeof (struct scsi_device));
+	sdev.sd_address.a_hba_tran = cqp->cpq_hba_tran;
+	sdev.sd_address.a_target = (uint16_t)tgt;
+	sdev.sd_address.a_lun = (uint8_t)lun;
+
+	if (tgt >= 0x41) { /* XXX: Kludge */
+		/* dev_err(cqp->dip, CE_NOTE,
+			"configuring lun for tgt:0x%x, lun:0x%x", tgt, lun); */
+		rval = cpqary3_config_cdip(cqp, &sdev, cdip);
+	}
+	if (sdev.sd_inq) {
+		kmem_free(sdev.sd_inq, SUN_INQSIZE);
+		sdev.sd_inq = (struct scsi_inquiry *)NULL;
+	}
+	return (rval);
+}
+
+static int
+cpqary3_tran_bus_config(dev_info_t *pdip, uint_t flags,
+    ddi_bus_config_op_t bus_op, void *arg, dev_info_t **cdip)
+{
+	cpqary3_t *cpq;
+	int circ = 0;
+	int rval = NDI_FAILURE;
+	int tgt, lun = 0;
+	if ((cpq = ddi_get_soft_state(cpqary3_state,
+	    ddi_get_instance(pdip))) == NULL)
+		return (NDI_FAILURE);
+
+	ndi_devi_enter(pdip, &circ);
+	switch (bus_op) {
+	case BUS_CONFIG_ONE:
+		if (cpqary3_get_tgt(arg, &tgt, &lun) != 0) {
+			rval = NDI_FAILURE;
+			break;
+		}
+		rval = cpqary3_config_lun(cpq, tgt, lun, cdip);
+		break;
+
+	case BUS_CONFIG_DRIVER:
+	case BUS_CONFIG_ALL:
+		for (tgt = 0x41; tgt < CPQARY3_MAX_TGT; tgt++) { /* Kludge */
+		    rval = cpqary3_config_lun(cpq, tgt, lun, NULL);
+		}
+		rval = NDI_SUCCESS;
+		break;
+	default: /* XXX: pks - compiler -Wswitch */
+		rval = NDI_FAILURE;
+		break;
+	}
+
+	if (rval == NDI_SUCCESS)
+		rval = ndi_busop_bus_config(pdip, flags, bus_op, arg, cdip, 0);
+
+	ndi_devi_exit(pdip, circ);
+	return (rval);
 }

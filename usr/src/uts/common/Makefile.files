@@ -24,7 +24,6 @@
 # Copyright (c) 2011, 2014 by Delphix. All rights reserved.
 # Copyright (c) 2013 by Saso Kiselkov. All rights reserved.
 # Copyright 2015 Nexenta Systems, Inc.  All rights reserved.
-# Copyright 2016 Joyent, Inc.
 # Copyright 2016 Garrett D'Amore <garrett@damore.org>
 # Copyright 2016 Joyent, Inc.
 #
@@ -2165,6 +2164,7 @@ CPQARY3_OBJS =	cpqary3.o \
 		cpqary3_user.o \
 		cpqary3_ciss_simple.o \
 		cpqary3_ciss.o \
+		cpqary3_physdev.o \
 
 #
 #	ISCSI_INITIATOR module

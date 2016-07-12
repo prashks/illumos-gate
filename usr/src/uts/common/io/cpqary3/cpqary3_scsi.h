@@ -115,6 +115,36 @@ typedef struct cpqary3_report_logical_lun_req {
 	uint8_t cprllr_control;
 } cpqary3_report_logical_lun_req_t;
 
+/* Report luns for Physical Devices */
+typedef struct cpqary3_report_physical_dev_ent {
+	PhysDevAddr_t cprpe_addr;
+} cpqary3_report_physical_dev_ent_t;
+
+typedef struct cpqary3_report_physical_dev_extent {
+	PhysDevAddr_t cprpe_addr;
+	uint8_t cprpe_wwn[16];
+} cpqary3_report_physical_dev_extent_t;
+
+typedef struct cpqary3_report_physical_dev {
+	uint32_t cprpl_datasize; /* Big Endian */
+	uint8_t cprpl_extflag;
+	uint8_t cprpl_reserved1[3];
+	union {
+		cpqary3_report_physical_dev_ent_t ents[CPQARY3_MAX_TGT];
+		cpqary3_report_physical_dev_extent_t extents[CPQARY3_MAX_TGT];
+	} cprpl_data;
+} cpqary3_report_physical_dev_t;
+
+typedef struct cpqary3_report_physical_dev_req {
+	uint8_t cprlpr_opcode;
+	uint8_t cprlpr_extflag;
+	uint8_t cprlpr_reserved1[4];
+	uint32_t cprlpr_datasize; /* Big Endian */
+	uint8_t cprlpr_reserved2;
+	uint8_t cprlpr_control;
+} cpqary3_report_physical_dev_req_t;
+
+
 
 
 typedef struct flushcache {

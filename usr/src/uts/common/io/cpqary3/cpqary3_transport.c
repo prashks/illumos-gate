@@ -57,7 +57,7 @@ cpqary3_getcap(struct scsi_address *sa, char *capstr, int tgtonly)
 
 	switch (index) {
 	case SCSI_CAP_CDB_LEN:
-		return (16);
+		return (CPQARY3_CDBLEN_16);
 	case SCSI_CAP_DMA_MAX:
 		return ((int)cpq->cpq_dma_attr.dma_attr_maxxfer);
 	case SCSI_CAP_DISCONNECT:
@@ -75,12 +75,28 @@ cpqary3_getcap(struct scsi_address *sa, char *capstr, int tgtonly)
 		return ((int)cpq->cpq_dma_attr.dma_attr_granular);
 	case SCSI_CAP_TOTAL_SECTORS:
 		return (CAP_NOT_DEFINED);
-#if 0
+#if 0 /* XXX: pks: Don't override this for physdevs, use SCSA default */
 	case SCSI_CAP_GEOMETRY:
 		return (cpqary3_target_geometry(sa));
 #endif
 	case SCSI_CAP_RESET_NOTIFICATION:
 		return (0);
+	case SCSI_CAP_INTERCONNECT_TYPE:
+		if (cpq->cpq_board->bd_flags & SA_BD_SAS) {
+			/* XXX: make sd qualify as DDI_NT_BLOCK_WWN */
+			return (INTERCONNECT_FABRIC);
+			/* return (INTERCONNECT_SAS); */
+		} else {
+			return (INTERCONNECT_PARALLEL);
+		}
+		break;
+	case SCSI_CAP_SCSI_VERSION:
+		if (cpq->cpq_board->bd_flags & SA_BD_SAS) {
+			return (SCSI_VERSION_3);
+		} else {
+			return (SCSI_VERSION_2); /* XXX check */
+		}
+		break;
 	default:
 		return (CAP_NOT_DEFINED);
 	}

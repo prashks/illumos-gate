@@ -116,8 +116,8 @@ static struct modldrv cpqary3_modldrv = {
 
 static struct modlinkage cpqary3_modlinkage = {
 	MODREV_1,		/* Loadable module rev. no. */
-	&cpqary3_modldrv, 	/* Loadable module */
-	NULL 			/* end */
+	&cpqary3_modldrv,	/* Loadable module */
+	NULL			/* end */
 };
 
 
@@ -202,6 +202,8 @@ cpqary3_attach(dev_info_t *dip, ddi_attach_cmd_t attach_cmd)
 	    offsetof(cpqary3_command_t, cpcm_link_abort));
 	list_create(&cpq->cpq_volumes, sizeof (cpqary3_volume_t),
 	    offsetof(cpqary3_volume_t, cplv_link));
+	list_create(&cpq->cpq_phys_devs, sizeof (cpqary3_phys_dev_t),
+	    offsetof(cpqary3_phys_dev_t, cppd_link));
 	list_create(&cpq->cpq_targets, sizeof (cpqary3_target_t),
 	    offsetof(cpqary3_target_t, cptg_link_ctlr));
 	avl_create(&cpq->cpq_inflight, cpqary3_command_comparator,
@@ -274,17 +276,29 @@ cpqary3_attach(dev_info_t *dip, ddi_attach_cmd_t attach_cmd)
 	    5 * NANOSEC, DDI_IPL_0);
 	cpq->cpq_init_level |= CPQARY3_INITLEVEL_PERIODIC;
 
+#if 0
 	/*
 	 * Discover the set of logical volumes attached to this controller:
+	 * XXX: pks: Enable this later
 	 */
 	if (cpqary3_discover_logical_volumes(cpq, 30) != 0) {
 		dev_err(dip, CE_WARN, "could not discover logical volumes");
+		goto fail;
+	}
+#endif
+	/*
+	 * Discover the set of physical devices attached to this controller:
+	 */
+	dev_err(dip, CE_NOTE, "discovering physical devices...");
+	if (cpqary3_discover_physical_devices(cpq, 30) != 0) {
+		dev_err(dip, CE_WARN, "could not discover physical devices");
 		goto fail;
 	}
 
 	/*
 	 * Announce the attachment of this controller.
 	 */
+	dev_err(dip, CE_NOTE, "discovering physical devices... done.");
 	ddi_report_dev(dip);
 
 	return (DDI_SUCCESS);

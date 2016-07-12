@@ -86,12 +86,15 @@ typedef enum cpqary3_ctlr_mode {
  */
 #define	MAX_LOGDRV		64	/* Max supported Logical Drivers */
 #define	MAX_CTLRS		8	/* Max supported Controllers */
+#define	MAX_TAPE		28	/* Max supported Tape */
+#define	MAX_PHYSDEV		88	/* Max supported Physical Devices */
 
 /*
  * In addition to Logical Volumes, we also expose the controller at a
  * pseudo target address on the SCSI bus we are essentially pretending to be.
  */
 #define	CPQARY3_CONTROLLER_TARGET		128
+#define	CTLR_SCSI_ID				7
 
 /*
  * NOTE: When changing the below two entries, Max SG count in cpqary3_ciss.h
@@ -102,7 +105,7 @@ typedef enum cpqary3_ctlr_mode {
 #define	CPQARY3_PERF_SG_CNT	31	/* minimum S/G for performant mode */
 
 
-#define	CPQARY3_MAX_TGT		(MAX_LOGDRV + MAX_TAPE + 1)
+#define	CPQARY3_MAX_TGT		(MAX_LOGDRV + MAX_PHYSDEV + 1)
 
 /*
  * SCSI Capabilities Related IDs
@@ -265,6 +268,7 @@ struct cpqary3 {
 	kcondvar_t		cpq_cv_finishq;
 
 	list_t			cpq_volumes;
+	list_t			cpq_phys_devs;
 	list_t			cpq_targets;
 
 	/*
@@ -341,17 +345,50 @@ typedef struct cpqary3_volume {
 } cpqary3_volume_t;
 
 /*
+ * Physical Device Structure
+ */
+typedef enum cpqary3_pd_flags {
+	CPQARY3_PD_FLAG_WWN =	(0x1 << 0),
+} cpqary3_pd_flags_t;
+typedef struct cpqary3_phys_dev {
+	PhysDevAddr_t		cppd_addr;
+	cpqary3_pd_flags_t	cppd_flags;
+
+	uint8_t			cppd_wwn[16];
+
+	cpqary3_t		*cppd_ctlr;
+	list_node_t		cppd_link;
+
+	/*
+	 * List of SCSA targets currently attached to this Physical LU:
+	 */
+	list_t			cppd_targets;
+} cpqary3_phys_dev_t;
+
+typedef enum cpqary3_tgt_type {
+	CPQARY3_TGT_NONE = 0,
+	CPQARY3_TGT_CTLR,
+	CPQARY3_TGT_LOGVOL,
+	CPQARY3_TGT_PHYSDEV
+} cpqary3_tgt_type_t;
+
+/*
  * Per-Target Structure
  */
 typedef struct cpqary3_target {
 	struct scsi_device	*cptg_scsi_dev;
-	boolean_t		cptg_controller_target;
+	cpqary3_tgt_type_t	cptg_type;
 
 	/*
 	 * Linkage back to the Logical Volume that this target represents:
 	 */
 	cpqary3_volume_t	*cptg_volume;
 	list_node_t		cptg_link_volume;
+	/*
+	 * Linkage back to the Physical Dev that this target represents:
+	 */
+	cpqary3_phys_dev_t	*cptg_phys_dev;
+	list_node_t		cptg_link_phys_dev;
 
 	/*
 	 * Linkage back to the controller:
@@ -590,6 +627,11 @@ uint32_t cpqary3_ctlr_get_maxsgelements(cpqary3_t *);
 int cpqary3_discover_logical_volumes(cpqary3_t *, int);
 cpqary3_volume_t *cpqary3_lookup_volume_by_id(cpqary3_t *, unsigned);
 cpqary3_volume_t *cpqary3_lookup_volume_by_addr(cpqary3_t *,
+    struct scsi_address *);
+
+int cpqary3_discover_physical_devices(cpqary3_t *, int);
+cpqary3_phys_dev_t *cpqary3_lookup_phys_dev_by_id(cpqary3_t *, unsigned);
+cpqary3_phys_dev_t *cpqary3_lookup_phys_dev_by_addr(cpqary3_t *,
     struct scsi_address *);
 
 #if 0
