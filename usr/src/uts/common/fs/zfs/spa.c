@@ -21,7 +21,7 @@
 
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2011, 2017 by Delphix. All rights reserved.
+ * Copyright (c) 2011, 2018 by Delphix. All rights reserved.
  * Copyright (c) 2015, Nexenta Systems, Inc.  All rights reserved.
  * Copyright (c) 2014 Spectra Logic Corporation, All rights reserved.
  * Copyright 2013 Saso Kiselkov. All rights reserved.
@@ -4615,11 +4615,11 @@ spa_vdev_add(spa_t *spa, nvlist_t *nvroot)
 			 */
 			if (tvd->vdev_ops == &vdev_mirror_ops) {
 				for (uint64_t cid = 0;
-				     cid < tvd->vdev_children; cid++) {
+				    cid < tvd->vdev_children; cid++) {
 					vdev_t *cvd = tvd->vdev_child[cid];
 					if (!cvd->vdev_ops->vdev_op_leaf) {
 						return (spa_vdev_exit(spa, vd,
-							txg, EINVAL));
+						    txg, EINVAL));
 					}
 				}
 			}
@@ -6946,6 +6946,14 @@ spa_event_post(sysevent_t *ev)
 	sysevent_id_t		eid;
 
 	(void) log_sysevent(ev, SE_SLEEP, &eid);
+	sysevent_free(ev);
+#endif
+}
+
+void
+spa_event_discard(sysevent_t *ev)
+{
+#ifdef _KERNEL
 	sysevent_free(ev);
 #endif
 }

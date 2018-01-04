@@ -20,7 +20,7 @@
  */
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2011, 2017 by Delphix. All rights reserved.
+ * Copyright (c) 2011, 2018 by Delphix. All rights reserved.
  * Copyright 2011 Nexenta Systems, Inc.  All rights reserved.
  * Copyright (c) 2014 Spectra Logic Corporation, All rights reserved.
  * Copyright 2013 Saso Kiselkov. All rights reserved.
@@ -365,9 +365,6 @@ extern void spa_taskq_dispatch_ent(spa_t *spa, zio_type_t t, zio_taskq_type_t q,
     task_func_t *func, void *arg, uint_t flags, taskq_ent_t *ent);
 extern void spa_load_spares(spa_t *spa);
 extern void spa_load_l2cache(spa_t *spa);
-extern sysevent_t *spa_event_create(spa_t *spa, vdev_t *vd, nvlist_t *hist_nvl,
-    const char *name);
-extern void spa_event_post(sysevent_t *ev);
 
 #ifdef	__cplusplus
 }

@@ -21,7 +21,7 @@
 
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2011, 2017 by Delphix. All rights reserved.
+ * Copyright (c) 2011, 2018 by Delphix. All rights reserved.
  */
 
 #include <sys/zfs_context.h>
@@ -49,7 +49,7 @@
  * This file contains the necessary logic to remove vdevs from a
  * storage pool.  Currently, the only devices that can be removed
  * are log, cache, and spare devices; and top level vdevs from a pool
- * w/o raidz or mirrors.  (Note that members of a mirror can be removed
+ * w/o raidz.  (Note that members of a mirror can also be removed
  * by the detach operation.)
  *
  * Log vdevs are removed by evacuating them and then turning the vdev
@@ -775,9 +775,9 @@ spa_vdev_copy_segment_read_done(zio_t *zio)
 	BP_SET_BYTEORDER(bp, ZFS_HOST_BYTEORDER);
 
 	zio_nowait(zio_rewrite(spa->spa_txg_zio[txg & TXG_MASK], spa,
-		txg, bp, zio->io_abd, size,
-		spa_vdev_copy_segment_write_done, vcsa,
-		ZIO_PRIORITY_REMOVAL, 0, NULL));
+	    txg, bp, zio->io_abd, size,
+	    spa_vdev_copy_segment_write_done, vcsa,
+	    ZIO_PRIORITY_REMOVAL, 0, NULL));
 }
 
 static int
@@ -850,9 +850,9 @@ spa_vdev_copy_segment(vdev_t *vd, uint64_t start, uint64_t size, uint64_t txg,
 	BP_SET_BYTEORDER(bp, ZFS_HOST_BYTEORDER);
 
 	zio_nowait(zio_read(spa->spa_txg_zio[txg & TXG_MASK], spa,
-		bp, abd_alloc_for_io(size, B_FALSE), size,
-		spa_vdev_copy_segment_read_done, private,
-		ZIO_PRIORITY_REMOVAL, 0, NULL));
+	    bp, abd_alloc_for_io(size, B_FALSE), size,
+	    spa_vdev_copy_segment_read_done, private,
+	    ZIO_PRIORITY_REMOVAL, 0, NULL));
 
 	list_insert_tail(&svr->svr_new_segments[txg & TXG_MASK], entry);
 	ASSERT3U(start + size, <=, vd->vdev_ms_count << vd->vdev_ms_shift);
@@ -1146,8 +1146,8 @@ spa_vdev_copy_impl(spa_vdev_removal_t *svr, vdev_copy_arg_t *vca,
  *    - Allocate space for it on another vdev.
  *    - Create a new mapping from the old location to the new location
  *      (as a record in svr_new_segments).
- *    - Initiate a physical read zio to get the data off the removing disk.
- *    - In the read zio's done callback, initiate a physical write zio to
+ *    - Initiate a logical read zio to get the data off the removing disk.
+ *    - In the read zio's done callback, initiate a logical write zio to
  *      write it to the new vdev.
  * Note that all of this will take effect when a particular TXG syncs.
  * The sync thread ensures that all the phys reads and writes for the syncing
@@ -1595,12 +1595,13 @@ spa_vdev_remove_log(vdev_t *vd, uint64_t *txg)
 	    "%s vdev %llu (log) %s", spa_name(spa), vd->vdev_id,
 	    (vd->vdev_path != NULL) ? vd->vdev_path : "-");
 
+	/* Make sure these changes are sync'ed */
 	spa_vdev_config_exit(spa, NULL, *txg, 0, FTAG);
 
 	*txg = spa_vdev_config_enter(spa);
 
 	sysevent_t *ev = spa_event_create(spa, vd, NULL,
-	    ESC_ZFS_VDEV_REMOVE_AUX);
+	    ESC_ZFS_VDEV_REMOVE_DEV);
 	ASSERT(MUTEX_HELD(&spa_namespace_lock));
 	ASSERT(spa_config_held(spa, SCL_ALL, RW_WRITER) == SCL_ALL);
 
@@ -1697,9 +1698,10 @@ spa_vdev_remove_top_check(vdev_t *vd)
 		 */
 		if (cvd->vdev_ops == &vdev_mirror_ops) {
 			for (uint64_t cid = 0;
-			     cid < cvd->vdev_children; cid++) {
-			    if (!cvd->vdev_child[cid]->vdev_ops->vdev_op_leaf)
-				    return (SET_ERROR(EINVAL));
+			    cid < cvd->vdev_children; cid++) {
+				vdev_t *tmp = cvd->vdev_child[cid];
+				if (!tmp->vdev_ops->vdev_op_leaf)
+					return (SET_ERROR(EINVAL));
 			}
 		}
 	}
@@ -1819,16 +1821,15 @@ spa_vdev_remove(spa_t *spa, uint64_t guid, boolean_t unspare)
 		 * in this pool.
 		 */
 		if (vd == NULL || unspare) {
-			if (vd == NULL)
-				vd = spa_lookup_by_guid(spa, guid, B_TRUE);
-			ev = spa_event_create(spa, vd, NULL,
-			    ESC_ZFS_VDEV_REMOVE_AUX);
-
 			char *nvstr = fnvlist_lookup_string(nv,
 			    ZPOOL_CONFIG_PATH);
 			spa_history_log_internal(spa, "vdev remove", NULL,
 			    "%s vdev (%s) %s", spa_name(spa),
 			    VDEV_TYPE_SPARE, nvstr);
+			if (vd == NULL)
+				vd = spa_lookup_by_guid(spa, guid, B_TRUE);
+			ev = spa_event_create(spa, vd, NULL,
+			    ESC_ZFS_VDEV_REMOVE_AUX);
 			spa_vdev_remove_aux(spa->spa_spares.sav_config,
 			    ZPOOL_CONFIG_SPARES, spares, nspares, nv);
 			spa_load_spares(spa);
@@ -1866,10 +1867,15 @@ spa_vdev_remove(spa_t *spa, uint64_t guid, boolean_t unspare)
 	}
 
 	if (!locked)
-		return (spa_vdev_exit(spa, NULL, txg, error));
+		error = spa_vdev_exit(spa, NULL, txg, error);
 
-	if (ev != NULL)
-		spa_event_post(ev);
+	if (ev != NULL) {
+		if (error != 0) {
+			spa_event_discard(ev);
+		} else {
+			spa_event_post(ev);
+		}
+	}
 
 	return (error);
 }

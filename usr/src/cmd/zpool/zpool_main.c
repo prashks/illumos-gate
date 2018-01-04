@@ -21,7 +21,7 @@
 
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2011, 2016 by Delphix. All rights reserved.
+ * Copyright (c) 2011, 2018 by Delphix. All rights reserved.
  * Copyright (c) 2012 by Frederik Wessels. All rights reserved.
  * Copyright (c) 2013 by Prasad Joshi (sTec). All rights reserved.
  * Copyright 2016 Igor Kozhukhov <ikozhukhov@gmail.com>.
@@ -682,8 +682,8 @@ zpool_do_remove(int argc, char **argv)
 					    argv[i], valstr);
 				}
 			} else {
-                                if (zpool_vdev_remove(zhp, argv[i]) != 0)
-                                        ret = 1;
+				if (zpool_vdev_remove(zhp, argv[i]) != 0)
+					ret = 1;
 			}
 		}
 	}

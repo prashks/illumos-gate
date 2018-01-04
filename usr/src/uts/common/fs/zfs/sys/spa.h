@@ -20,7 +20,7 @@
  */
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2011, 2016 by Delphix. All rights reserved.
+ * Copyright (c) 2011, 2018 by Delphix. All rights reserved.
  * Copyright 2011 Nexenta Systems, Inc.  All rights reserved.
  * Copyright (c) 2014 Spectra Logic Corporation, All rights reserved.
  * Copyright 2013 Saso Kiselkov. All rights reserved.
@@ -35,6 +35,7 @@
 #include <sys/avl.h>
 #include <sys/zfs_context.h>
 #include <sys/nvpair.h>
+#include <sys/sysevent.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <sys/fs/zfs.h>
@@ -890,6 +891,10 @@ extern void spa_configfile_set(spa_t *, nvlist_t *, boolean_t);
 /* asynchronous event notification */
 extern void spa_event_notify(spa_t *spa, vdev_t *vdev, nvlist_t *hist_nvl,
     const char *name);
+extern sysevent_t *spa_event_create(spa_t *spa, vdev_t *vd, nvlist_t *hist_nvl,
+    const char *name);
+extern void spa_event_post(sysevent_t *ev);
+extern void spa_event_discard(sysevent_t *ev);
 
 #ifdef ZFS_DEBUG
 #define	dprintf_bp(bp, fmt, ...) do {				\
